@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Settings</title>
+    <link rel="stylesheet" href="css/style.css">
+    <style type="text/css">
+        body {
+            width: 180px;
+            height: 100px;
+        }
+    </style>
+    <script src="js/theme-loader.js"></script>
+    <script src="js/theme.js"></script>
+</head>
+<body>
+<div class="text-center">
+    <div class="container">
+        <h1 class="title">Settings</h1>
+
+        <div id="settings-container">
+            <div class="form-group">
+                <label for="submit-warn">
+        Warn me if I forget to start the extension
+    </label>
+    <input type="checkbox" id="submit-warn">
+
+            <div class="theme-switch-wrapper">
+                <label class="theme-switch" for="checkbox">
+                    <input type="checkbox" id="checkbox" />
+                    <div class="slider round"></div>
+                </label>
+                <em>Dark Mode</em>
+            </div>
+    <div class="font-bold mb-10 mt-10" id="save-status"></div>
+    <div class="buttons-container">
+        <button class="btn mt-10" id="export-csv-btn">Export Tasks to CSV</button>
+    </div>
+    <hr>
+    <button class="btn" id="save-btn">Save</button>
+    <button class="btn" id="logout-btn">Logout</button>
+    <button class="btn btn-reset" id="reset-btn">Reset</button>
+    <p><a href="popup.html" id="back">| Back |</a></p>
+</div>
+<hr>
+<a href="https://www.flaticon.com/free-icons/count" title="count icons">Count icons created by Freepik - Flaticon</a>
+<script type="module" src="js/settings.js"></script>
+</body>
+</html>
+
