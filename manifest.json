@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Ewok Notifier & Counter",
+  "name": "Ewok Notifier & Counter test",
   "version": "1.0",
   "description": "Notification, time tracker and task counter.",
   "permissions": ["storage"],

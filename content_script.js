@@ -5,7 +5,16 @@ const TASK_NAME_SELECTOR_TEST = "//*[@id=\"task\"]";
 
 // Task Alert Constants
 const TARGET_ELEMENT_SELECTOR = 'material-button[class*="start-button"]';
-const SERVER_URL = 'https://ewokd.ciprianilab.tech';
+const socket = new WebSocket("ws://127.0.0.1:8080/ws");
+
+socket.onopen = () => {
+    const payload = { action: "send_signal", user_id: userId, messages: [{ text: "whatever" }] };
+    socket.send(JSON.stringify(payload));
+};
+
+socket.onmessage = (event) => {
+    console.log("Response:", event.data);
+};
 
 let taskStartTime = new Date().getTime();
 let signalSent = false;
