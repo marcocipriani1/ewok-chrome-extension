@@ -5,25 +5,124 @@ const TASK_NAME_SELECTOR_TEST = "//*[@id=\"task\"]";
 
 // Task Alert Constants
 const TARGET_ELEMENT_SELECTOR = 'material-button[class*="start-button"]';
-const socket = new WebSocket("ws://127.0.0.1:8080/ws");
-
-socket.onopen = () => {
-    const payload = { action: "send_signal", user_id: userId, messages: [{ text: "whatever" }] };
-    socket.send(JSON.stringify(payload));
-};
-
-socket.onmessage = (event) => {
-    console.log("Response:", event.data);
-};
+const WS_SERVER_URL = "ws://127.0.0.1:8080/ws";
 
 let taskStartTime = new Date().getTime();
 let signalSent = false;
 let wasDisabled = true;
 let userId;
+let socket = null;
+let isSocketConnected = false;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_DELAY = 3000;
 
 // Initialize both functionalities
 initializeTaskCounter();
 initializeTaskAlert();
+
+// WebSocket Connection Management
+function connectWebSocket() {
+    if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
+        console.log("WebSocket already connected or connecting");
+        return;
+    }
+
+    console.log("Connecting to WebSocket server...");
+    socket = new WebSocket(WS_SERVER_URL);
+
+    socket.onopen = () => {
+        console.log("WebSocket connected successfully");
+        isSocketConnected = true;
+        reconnectAttempts = 0;
+    };
+
+    socket.onmessage = (event) => {
+        try {
+            const response = JSON.parse(event.data);
+            console.log("WebSocket response:", response);
+            
+            if (response.status === 'error') {
+                console.error("Server error:", response.error);
+            }
+        } catch (error) {
+            console.error("Error parsing WebSocket message:", error);
+        }
+    };
+
+    socket.onerror = (error) => {
+        console.error("WebSocket error:", error);
+        isSocketConnected = false;
+    };
+
+    socket.onclose = () => {
+        console.log("WebSocket disconnected");
+        isSocketConnected = false;
+        
+        // Attempt to reconnect
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttempts++;
+            console.log(`Reconnecting... Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
+            setTimeout(connectWebSocket, RECONNECT_DELAY);
+        } else {
+            console.error("Max reconnection attempts reached");
+        }
+    };
+}
+
+// Send message through WebSocket with connection check
+function sendWebSocketMessage(action, payload) {
+    return new Promise((resolve, reject) => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+            console.log("WebSocket not connected, attempting to connect...");
+            connectWebSocket();
+            
+            // Wait for connection and retry
+            const checkConnection = setInterval(() => {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    clearInterval(checkConnection);
+                    sendMessage();
+                }
+            }, 500);
+            
+            // Timeout after 5 seconds
+            setTimeout(() => {
+                clearInterval(checkConnection);
+                reject(new Error("WebSocket connection timeout"));
+            }, 5000);
+        } else {
+            sendMessage();
+        }
+        
+        function sendMessage() {
+            try {
+                const message = JSON.stringify({ action, payload });
+                socket.send(message);
+                
+                // Wait for response
+                const responseHandler = (event) => {
+                    try {
+                        const response = JSON.parse(event.data);
+                        socket.removeEventListener('message', responseHandler);
+                        resolve(response);
+                    } catch (error) {
+                        reject(error);
+                    }
+                };
+                
+                socket.addEventListener('message', responseHandler);
+                
+                // Timeout after 10 seconds
+                setTimeout(() => {
+                    socket.removeEventListener('message', responseHandler);
+                    reject(new Error("Response timeout"));
+                }, 10000);
+            } catch (error) {
+                reject(error);
+            }
+        }
+    });
+}
 
 function initializeTaskCounter() {
     countTasksByClick();
@@ -32,7 +131,13 @@ function initializeTaskCounter() {
 
 function initializeTaskAlert() {
     chrome.storage.local.get(['userId'], function(result) {
-        userId = result.userId;
+        if (result.userId !== undefined && result.userId !== null) {
+            // keep as string to preserve full snowflake precision
+            userId = String(result.userId);
+            connectWebSocket();
+        } else {
+            userId = undefined;
+        }
         observeElement();
     });
 }
@@ -137,15 +242,15 @@ function getSubmitButton() {
     let submitButton = document.evaluate(SUBMIT_BTN_SELECTOR, document, null,
                                          XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
 
-                                         if (isTest()) {
-                                             return submitButton;
-                                         }
+    if (isTest()) {
+        return submitButton;
+    }
 
-                                         if (submitButton === null) {
-                                             return null;
-                                         }
+    if (submitButton === null) {
+        return null;
+    }
 
-                                         return submitButton.parentElement;
+    return submitButton.parentElement;
 }
 
 function getTaskName() {
@@ -162,32 +267,32 @@ function isTest() {
     return document.location.href.includes("file:///");
 }
 
-// Task Alert Functions
-function sendSignalToDiscordBot() {
-    console.log('Sending signal to Discord bot...');
+// Task Alert Functions - Now using WebSocket
+async function sendSignalToDiscordBot() {
+    console.log('Sending signal to Discord bot via WebSocket...');
 
     const message = 'Tasks are now available. Please check your task queue https://tenor.com/view/typing-fast-cat-gif-23588893';
-    const payload = { user_id: userId, messages: [{ text: message, count: 1 }] };
+    const payload = {
+        // keep user_id as string
+        user_id: userId,
+        messages: [{ text: message, count: 1 }]
+    };
 
     console.log(`Payload to server: ${JSON.stringify(payload)}`);
 
-    fetch(SERVER_URL + '/send_signal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-    })
-    .then((response) => {
-        if (!response.ok) {
-            throw new Error('Network response was not ok');
+    try {
+        const response = await sendWebSocketMessage('send_signal', payload);
+        
+        if (response && response.status === 'success') {
+            console.log('Signal sent to the bot successfully:', response.data);
+        } else if (response) {
+            console.error('Error from server:', response.error);
+        } else {
+            console.error('No response from server');
         }
-        return response.json();
-    })
-    .then((data) => {
-        console.log('Signal sent to the bot successfully:', data);
-    })
-    .catch((error) => {
+    } catch (error) {
         console.error('Error sending signal to the bot:', error);
-    });
+    }
 }
 
 async function checkAndSendSignal(element) {
@@ -264,7 +369,16 @@ function observeElement() {
 // Message listener for starting observation
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.message === 'start_observation') {
-        userId = request.userId;
+        // preserve as string
+        userId = request.userId !== undefined && request.userId !== null ? String(request.userId) : undefined;
+        connectWebSocket();
         observeElement();
+    }
+});
+
+// Clean up WebSocket on page unload
+window.addEventListener('beforeunload', () => {
+    if (socket) {
+        socket.close();
     }
 });

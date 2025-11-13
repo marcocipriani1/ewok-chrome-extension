@@ -1,15 +1,30 @@
 import { calculateRph, renderTask, formatTime, calculateRatePerSecond } from "./utils.js";
-const SERVER_URL = 'https://ewokd.ciprianilab.tech';
 
+const WS_SERVER_URL = 'ws://127.0.0.1:8080/ws';
+
+let socket = null;
+let isSocketConnected = false;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_DELAY = 3000;
+let messageHandlers = new Map();
+let messageId = 0;
+let connectionPromise = null; // Track ongoing connection attempts
+
+// Initialize on DOMContentLoaded
 document.addEventListener('DOMContentLoaded', initializeExtension);
 
 function initializeExtension() {
+    // Start connection immediately
+    connectWebSocket();
+    
     chrome.storage.local.get(["userId"], function(data) {
         if (data.userId) {
             showMainContainer();
             render();
-            refreshStatus();
-            getTasksStats();
+            // Wait a bit for WebSocket to connect before checking status
+            setTimeout(() => refreshStatus(), 1000);
+            setTimeout(() => getTasksStats(), 1500);
         } else {
             showLoginContainer();
         }
@@ -27,34 +42,177 @@ function showMainContainer() {
     document.getElementById("main-container").style.display = "block";
 }
 
-function getBotStatus(userId) {
-    const payload = { user_id: userId };
+// Improved WebSocket Connection
+function connectWebSocket() {
+    // If already connecting or connected, return existing promise
+    if (connectionPromise) {
+        return connectionPromise;
+    }
 
-    fetch(SERVER_URL + '/status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-    })
-    .then((response) => response.json())
-    .then((data) => {
-        let status = data.error ? 'Offline' : (data.status === 'Online' ? 'Online' : 'Error');
-        let statusElement = document.getElementById("bot-status");
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        console.log("WebSocket already connected");
+        return Promise.resolve();
+    }
+
+    if (socket && socket.readyState === WebSocket.CONNECTING) {
+        console.log("WebSocket already connecting, waiting...");
+        return connectionPromise;
+    }
+
+    console.log("Connecting to WebSocket server...");
+    
+    connectionPromise = new Promise((resolve, reject) => {
+        try {
+            socket = new WebSocket(WS_SERVER_URL);
+            
+            const timeout = setTimeout(() => {
+                if (socket.readyState !== WebSocket.OPEN) {
+                    socket.close();
+                    connectionPromise = null;
+                    reject(new Error("WebSocket connection timeout"));
+                }
+            }, 10000); // 10 second timeout
+
+            socket.onopen = () => {
+                clearTimeout(timeout);
+                console.log("✅ WebSocket connected successfully");
+                isSocketConnected = true;
+                reconnectAttempts = 0;
+                connectionPromise = null;
+                resolve();
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const response = JSON.parse(event.data);
+                    console.log("📨 WebSocket response:", response);
+                    
+                    if (response.messageId !== undefined && messageHandlers.has(response.messageId)) {
+                        const handler = messageHandlers.get(response.messageId);
+                        messageHandlers.delete(response.messageId);
+                        handler(response);
+                    }
+                } catch (error) {
+                    console.error("❌ Error parsing WebSocket message:", error);
+                }
+            };
+
+            socket.onerror = (error) => {
+                clearTimeout(timeout);
+                console.error("❌ WebSocket error:", error);
+                isSocketConnected = false;
+                connectionPromise = null;
+            };
+
+            socket.onclose = () => {
+                clearTimeout(timeout);
+                console.log("🔌 WebSocket disconnected");
+                isSocketConnected = false;
+                connectionPromise = null;
+                
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts++;
+                    console.log(`🔄 Reconnecting... Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
+                    setTimeout(() => connectWebSocket(), RECONNECT_DELAY);
+                } else {
+                    console.error("❌ Max reconnection attempts reached");
+                }
+            };
+        } catch (error) {
+            connectionPromise = null;
+            reject(error);
+        }
+    });
+
+    return connectionPromise;
+}
+
+// Improved sendWebSocketMessage with better connection handling
+async function sendWebSocketMessage(action, payload) {
+    console.log(`📤 Sending message: ${action}`, payload);
+    
+    return new Promise(async (resolve, reject) => {
+        try {
+            // Ensure WebSocket is connected
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                console.log("🔄 WebSocket not connected, connecting...");
+                try {
+                    await connectWebSocket();
+                } catch (error) {
+                    console.error("❌ Failed to connect:", error);
+                    reject(new Error("Failed to establish WebSocket connection"));
+                    return;
+                }
+            }
+
+            // Double-check connection
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                reject(new Error("WebSocket is not open after connection attempt"));
+                return;
+            }
+
+            const msgId = messageId++;
+            const message = JSON.stringify({ action, payload, messageId: msgId });
+            
+            // Set up response handler with timeout
+            const timeout = setTimeout(() => {
+                if (messageHandlers.has(msgId)) {
+                    messageHandlers.delete(msgId);
+                    reject(new Error(`Response timeout for action: ${action}`));
+                }
+            }, 15000); // 15 second timeout for response
+            
+            messageHandlers.set(msgId, (response) => {
+                clearTimeout(timeout);
+                console.log(`📥 Received response for ${action}:`, response);
+                
+                if (response.status === 'success') {
+                    resolve(response.data);
+                } else {
+                    reject(new Error(response.error || 'Unknown error'));
+                }
+            });
+            
+            // Send the message
+            socket.send(message);
+            console.log(`✉️ Message sent: ${action}`);
+            
+        } catch (error) {
+            console.error(`❌ Error in sendWebSocketMessage:`, error);
+            reject(error);
+        }
+    });
+}
+
+// Improved getBotStatus
+async function getBotStatus(userId) {
+    const payload = { user_id: userId };
+    const statusElement = document.getElementById("bot-status");
+
+    statusElement.textContent = "Checking...";
+    statusElement.style.color = "yellow";
+
+    try {
+        console.log("🔍 Checking bot status...");
+        const data = await sendWebSocketMessage("status", payload);
+        console.log("✅ Status response:", data);
+        
+        let status;
+        if (data?.status === "Online") {
+            status = "Online";
+            statusElement.style.color = "green";
+        } else {
+            status = "Unknown";
+            statusElement.style.color = "orange";
+        }
+        
         statusElement.textContent = status;
 
-        if (status === 'Online') {
-            statusElement.style.color = 'green';
-        } else if (status === 'Offline') {
-            statusElement.style.color = 'red';
-        } else {
-            statusElement.style.color = 'yellow';
-        }
-    })
-    .catch((error) => {
-        console.error('Failed to fetch bot status:', error);
-        let statusElement = document.getElementById("bot-status");
-        statusElement.textContent = 'Offline';
-        statusElement.style.color = 'red';
-    });
+    } catch (error) {
+        console.error("❌ Failed to fetch bot status:", error);
+        statusElement.textContent = "Offline";
+        statusElement.style.color = "red";
+    }
 }
 
 function render() {
@@ -145,7 +303,7 @@ function addButtonFunctions() {
     document.getElementById("send-report-btn").addEventListener("click", sendTasksReport);
 }
 
-function handleLogin(event) {
+async function handleLogin(event) {
     event.preventDefault();
     let userIdInput = document.getElementById("user-id-input");
     let userId = userIdInput.value.trim();
@@ -162,43 +320,30 @@ function handleLogin(event) {
     }
 
     loginMessage.innerHTML = '<div class="loading"></div>';
-    let payload = { user_id: userId };
 
-    fetch(SERVER_URL + '/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-    })
-    .then((response) => {
-        if (!response.ok) {
-            if(response.status === 403) {
-                throw new Error('User not allowed');
-            } else {
-                throw new Error('Network response was not ok');
-            }
-        }
-        return response.json();
-    })
-    .then((data) => {
-        if (data.error) {
-            loginMessage.innerHTML = `<p class="error-message">${data.error}</p>`;
+    try {
+        const data = await sendWebSocketMessage('login', { user_id: userId });
+        
+        loginMessage.innerHTML = '<p class="success-message">Login successful!</p>';
+        chrome.storage.local.set({ userId: userId }, function() {
+            console.log('User ID saved successfully: ' + userId);
+            setTimeout(() => {
+                showMainContainer();
+                render();
+                refreshStatus();
+                getTasksStats();
+            }, 1000);
+        });
+    } catch (error) {
+        if (error.message.includes('not allowed') || error.message.includes('not authorized')) {
+            loginMessage.innerHTML = '<p class="error-message">User not authorized</p>';
         } else {
-            loginMessage.innerHTML = '<p class="success-message">Login successful!</p>';
-            chrome.storage.local.set({ userId: userId }, function() {
-                console.log('User ID saved successfully: ' + userId);
-                setTimeout(() => {
-                    showMainContainer();
-                    render();
-                }, 1000);
-            });
+            loginMessage.innerHTML = `<p class="error-message">Error logging in: ${error.message}</p>`;
         }
-    })
-    .catch((error) => {
-        loginMessage.innerHTML = `<p class="error-message">Error logging in: ${error.message}</p>`;
-    });
+    }
 }
 
-function login(event) {
+async function login(event) {
     event.preventDefault();
     let userIdInput = document.getElementById("user-id-input");
     let userId = userIdInput.value.trim();
@@ -215,40 +360,27 @@ function login(event) {
     }
 
     loginMessage.innerHTML = '<div class="loading"></div>';
-    let payload = { user_id: userId };
 
-    fetch(SERVER_URL + '/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-    })
-    .then((response) => {
-        if (!response.ok) {
-            if(response.status === 403) {
-                throw new Error('User not allowed');
-            } else {
-                throw new Error('Network response was not ok');
-            }
-        }
-        return response.json();
-    })
-    .then((data) => {
-        if (data.error) {
-            loginMessage.innerHTML = `<p class="error-message">${data.error}</p>`;
+    try {
+        const data = await sendWebSocketMessage('login', { user_id: userId });
+        
+        loginMessage.innerHTML = '<p class="success-message">Login successful!</p>';
+        chrome.storage.local.set({ userId: userId }, function() {
+            console.log('User ID saved successfully: ' + userId);
+            setTimeout(() => {
+                showMainContainer();
+                render();
+                refreshStatus();
+                getTasksStats();
+            }, 1000);
+        });
+    } catch (error) {
+        if (error.message.includes('not allowed') || error.message.includes('not authorized')) {
+            loginMessage.innerHTML = '<p class="error-message">User not authorized</p>';
         } else {
-            loginMessage.innerHTML = '<p class="success-message">Login successful!</p>';
-            chrome.storage.local.set({ userId: userId }, function() {
-                console.log('User ID saved successfully: ' + userId);
-                setTimeout(() => {
-                    showMainContainer();
-                    render();
-                }, 1000);
-            });
+            loginMessage.innerHTML = `<p class="error-message">Error logging in: ${error.message}</p>`;
         }
-    })
-    .catch((error) => {
-        loginMessage.innerHTML = `<p class="error-message">Error logging in: ${error.message}</p>`;
-    });
+    }
 }
 
 function handleStart() {
@@ -283,48 +415,55 @@ function handleStop() {
 }
 
 function refreshStatus() {
-    chrome.storage.local.get(["userId"], (data) => {
+    chrome.storage.local.get(["userId"], async (data) => {
         if (data.userId) {
             let statusElement = document.getElementById("bot-status");
             statusElement.textContent = 'Checking...';
             statusElement.style.color = 'yellow';
-            getBotStatus(data.userId);
+            
+            // Ensure WebSocket is ready before checking status
+            try {
+                if (!socket || socket.readyState !== WebSocket.OPEN) {
+                    await connectWebSocket();
+                }
+                await getBotStatus(data.userId);
+            } catch (error) {
+                console.error("Error in refreshStatus:", error);
+                statusElement.textContent = 'Connection Error';
+                statusElement.style.color = 'red';
+            }
         }
     });
 }
 
-function sendTasksReport() {
-    chrome.storage.local.get(["tasks", "userId"], (result) => {
+async function sendTasksReport() {
+    try {
+        const result = await new Promise((resolve) => {
+            chrome.storage.local.get(["tasks", "userId"], resolve);
+        });
+
         if (!result.tasks || Object.keys(result.tasks).length === 0) {
             console.log("No tasks have been recorded yet. Cannot send report.");
             return;
         }
-        let payload = {
+
+        const data = await sendWebSocketMessage('process_tasks', {
             user_id: result.userId,
             tasks: result.tasks
-        };
-        fetch(SERVER_URL + '/process_tasks', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        })
-        .then((response) => {
-            if (!response.ok) {
-                throw new Error('Network response was not ok');
-            }
-            return response.json();
-        })
-        .then((data) => {
-            console.log('Tasks report sent automatically');
-        })
-        .catch((error) => {
-            console.error('Error sending automatic tasks report:', error);
         });
-    });
+
+        console.log('Tasks report sent successfully:', data);
+    } catch (error) {
+        console.error('Error sending tasks report:', error);
+    }
 }
 
-function getTasksStats() {
-    chrome.storage.local.get(["tasks", "userId"], (result) => {
+async function getTasksStats() {
+    try {
+        const result = await new Promise((resolve) => {
+            chrome.storage.local.get(["tasks", "userId"], resolve);
+        });
+
         console.log('Retrieved tasks:', result.tasks);
         console.log('User ID:', result.userId);
 
@@ -333,32 +472,16 @@ function getTasksStats() {
             return;
         }
 
-        let payload = {
+        const data = await sendWebSocketMessage('get_task_stats', {
             user_id: result.userId,
             tasks: result.tasks
-        };
-
-        console.log('Sending payload to server:', payload);
-
-        fetch(SERVER_URL + '/get_task_stats', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        })
-        .then((response) => {
-            if (!response.ok) {
-                throw new Error('Network response was not ok');
-            }
-            return response.json();
-        })
-        .then((data) => {
-            console.log('Task stats retrieved successfully:', data);
-            updateServerDataFields(data.total_time, data.total_payout);
-        })
-        .catch((error) => {
-            console.error('Error getting task stats:', error);
         });
-    });
+
+        console.log('Task stats retrieved successfully:', data);
+        updateServerDataFields(data.total_time, data.total_payout);
+    } catch (error) {
+        console.error('Error getting task stats:', error);
+    }
 }
 
 function updateServerDataFields(totalTime, totalPayout) {
@@ -366,3 +489,10 @@ function updateServerDataFields(totalTime, totalPayout) {
     document.getElementById("total_payout").innerText = totalPayout || 0;
     chrome.storage.local.set({ totalTime: totalTime, totalPayout: totalPayout });
 }
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    if (socket) {
+        socket.close();
+    }
+});
