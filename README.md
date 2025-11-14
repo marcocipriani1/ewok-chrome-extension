@@ -27,8 +27,8 @@ It handles task tracking, notification forwarding, and automated reporting.
 
 1. Work on tasks as usual in Ewoq.
 2. Once done, open the Ewok extension.
-3. Hit **Send Report to Bot**.  
-   The bot will process it and return Welocalize-recognized work time.
+3. Hit **Send Report**.  
+   The daemon will process it and send the work time to your Discord chat with the bot.
 
 ## 📂 Requirements
 
