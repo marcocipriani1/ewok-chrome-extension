@@ -17,12 +17,6 @@ It handles task tracking, notification forwarding, and automated reporting.
 2. Open the **Ewoq home page** in a browser tab.
 3. Keep that tab open. The bot relies on it to read notifications and forward them to your Discord.
 
-## ⚙️ Configuration
-
-1. Open the Ewok extension **Settings**.
-2. Enter your **Discord User ID** to enable automatic reporting to the bot.
-3. Save your settings.
-
 ## 📝 Tracking Tasks & Generating Reports
 
 1. Work on tasks as usual in Ewoq.
