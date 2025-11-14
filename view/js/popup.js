@@ -366,3 +366,4 @@ function updateServerDataFields(totalTime, totalPayout) {
     document.getElementById("total_payout").innerText = totalPayout || 0;
     chrome.storage.local.set({ totalTime: totalTime, totalPayout: totalPayout });
 }
+
